@@ -47,6 +47,8 @@ import com.google.android.gms.auth.api.Auth;
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.GoogleApiClient;
 import com.google.android.gms.tasks.OnCompleteListener;
+import com.google.android.gms.tasks.OnFailureListener;
+import com.google.android.gms.tasks.OnSuccessListener;
 import com.google.android.gms.tasks.Task;
 import com.google.firebase.analytics.FirebaseAnalytics;
 import com.google.firebase.appindexing.Action;
@@ -61,9 +63,14 @@ import com.google.firebase.database.DataSnapshot;
 import com.google.firebase.database.DatabaseError;
 import com.google.firebase.database.DatabaseReference;
 import com.google.firebase.database.FirebaseDatabase;
+import com.google.firebase.remoteconfig.FirebaseRemoteConfig;
+import com.google.firebase.remoteconfig.FirebaseRemoteConfigSettings;
 import com.google.firebase.storage.FirebaseStorage;
 import com.google.firebase.storage.StorageReference;
 import com.google.firebase.storage.UploadTask;
+
+import java.util.HashMap;
+import java.util.Map;
 
 import de.hdodenhof.circleimageview.CircleImageView;
 
@@ -114,6 +121,7 @@ public class MainActivity extends AppCompatActivity
     private FirebaseUser mFirebaseUser;
     private DatabaseReference mFirebaseDatabaseReference;
     private FirebaseAnalytics mFirebaseAnalytics;
+    private FirebaseRemoteConfig mFirebaseRemoteConfig;
     private FirebaseRecyclerAdapter<FriendlyMessage, MessageViewHolder> mFirebaseAdapter;
 
     @Override
@@ -197,6 +205,7 @@ public class MainActivity extends AppCompatActivity
 
 
         mFirebaseDatabaseReference = FirebaseDatabase.getInstance().getReference();
+        System.out.println(mFirebaseDatabaseReference);
         mFirebaseAdapter = new FirebaseRecyclerAdapter<FriendlyMessage, MessageViewHolder>(FriendlyMessage.class, R.layout.item_message, MessageViewHolder.class, mFirebaseDatabaseReference.child(MESSAGES_CHILD)) {
 
             @Override
@@ -237,6 +246,7 @@ public class MainActivity extends AppCompatActivity
                                     }
                                 });
                     } else {
+                        Log.e("imageUrl1", imageUrl);
                         Glide.with(viewHolder.messageImageView.getContext())
                                 .load(friendlyMessage.getImageUrl())
                                 .into(viewHolder.messageImageView);
@@ -281,6 +291,21 @@ public class MainActivity extends AppCompatActivity
 
         mMessageRecyclerView.setLayoutManager(mLinearLayoutManager);
         mMessageRecyclerView.setAdapter(mFirebaseAdapter);
+
+        mFirebaseRemoteConfig = FirebaseRemoteConfig.getInstance();
+
+        FirebaseRemoteConfigSettings firebaseRemoteConfigSettings =
+                new FirebaseRemoteConfigSettings.Builder()
+                .setDeveloperModeEnabled(true)
+                .build();
+
+        Map<String, Object> defaultConfigMap = new HashMap<>();
+        defaultConfigMap.put("friendly_msg_length", 10L);
+
+        mFirebaseRemoteConfig.setConfigSettings(firebaseRemoteConfigSettings);
+        mFirebaseRemoteConfig.setDefaults(defaultConfigMap);
+
+        fetchConfig();
 
     }
 
@@ -344,8 +369,8 @@ public class MainActivity extends AppCompatActivity
                         if (task.isSuccessful()) {
                             FriendlyMessage friendlyMessage =
                                     new FriendlyMessage(null, mUsername, mPhotoUrl,
-                                            task.getResult().getDownloadUrl()
-                                                    .toString());
+                                            task.getResult().getDownloadUrl().toString());
+
                             mFirebaseDatabaseReference.child(MESSAGES_CHILD).child(key)
                                     .setValue(friendlyMessage);
                         } else {
@@ -424,6 +449,38 @@ public class MainActivity extends AppCompatActivity
                 return super.onOptionsItemSelected(item);
         }
     }
+
+    public void fetchConfig() {
+        long cacheExpiration = 3600; // 1시간 -> 3600초
+        // 개발자 모드가 활성화 된 경우 cacheExpiration을 0으로 줄이면 각 페치가 서버로 전달된다.
+        // 릴리즈 빌드에서는 사용하지 말아야 한다.
+        if (mFirebaseRemoteConfig.getInfo().getConfigSettings().isDeveloperModeEnabled()) {
+            cacheExpiration = 0;
+        }
+        mFirebaseRemoteConfig.fetch(cacheExpiration)
+                .addOnSuccessListener(new OnSuccessListener<Void>() {
+                    @Override
+                    public void onSuccess(Void aVoid) {
+                        mFirebaseRemoteConfig.activateFetched();
+                        applyRetrivedLengthLimit();
+                    }
+                })
+                .addOnFailureListener(new OnFailureListener() {
+                    @Override
+                    public void onFailure(@NonNull Exception e) {
+                        Log.e(TAG, "페칭 컨피그 에러", e);
+                        applyRetrivedLengthLimit();
+                    }
+                });
+
+    }
+
+    private void applyRetrivedLengthLimit() {
+        Long friendly_msg_length = mFirebaseRemoteConfig.getLong("friendly_msg_length");
+        mMessageEditText.setFilters(new InputFilter[]{new InputFilter.LengthFilter(friendly_msg_length.intValue())});
+        Log.e(TAG, "FML is: " + friendly_msg_length);
+    }
+
 
     @Override
     public void onConnectionFailed(@NonNull ConnectionResult connectionResult) {
