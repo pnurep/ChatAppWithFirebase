@@ -42,6 +42,9 @@ import android.widget.Toast;
 
 import com.bumptech.glide.Glide;
 import com.firebase.ui.database.FirebaseRecyclerAdapter;
+import com.google.android.gms.ads.AdRequest;
+import com.google.android.gms.ads.AdView;
+import com.google.android.gms.appinvite.AppInvite;
 import com.google.android.gms.appinvite.AppInviteInvitation;
 import com.google.android.gms.auth.api.Auth;
 import com.google.android.gms.common.ConnectionResult;
@@ -59,6 +62,7 @@ import com.google.firebase.appindexing.builders.Indexables;
 import com.google.firebase.appindexing.builders.PersonBuilder;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseUser;
+import com.google.firebase.crash.FirebaseCrash;
 import com.google.firebase.database.DataSnapshot;
 import com.google.firebase.database.DatabaseError;
 import com.google.firebase.database.DatabaseReference;
@@ -123,6 +127,7 @@ public class MainActivity extends AppCompatActivity
     private FirebaseAnalytics mFirebaseAnalytics;
     private FirebaseRemoteConfig mFirebaseRemoteConfig;
     private FirebaseRecyclerAdapter<FriendlyMessage, MessageViewHolder> mFirebaseAdapter;
+    private AdView mAdView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -135,12 +140,17 @@ public class MainActivity extends AppCompatActivity
         mGoogleApiClient = new GoogleApiClient.Builder(this)
                 .enableAutoManage(this /* FragmentActivity */, this /* OnConnectionFailedListener */)
                 .addApi(Auth.GOOGLE_SIGN_IN_API)
+                .addApi(AppInvite.API)
                 .build();
 
         //Initialize Firebase Auth
         mFirebaseAuth = FirebaseAuth.getInstance();
         mFirebaseAnalytics = FirebaseAnalytics.getInstance(this);
         mFirebaseUser = mFirebaseAuth.getCurrentUser();
+        mAdView = (AdView) findViewById(R.id.adView);
+        AdRequest adRequest = new AdRequest.Builder().build();
+        mAdView.loadAd(adRequest);
+
         if (mFirebaseUser == null) {
             startActivity(new Intent(this, SignInActivity.class));
             finish();
@@ -156,8 +166,11 @@ public class MainActivity extends AppCompatActivity
         // 프로그레스바 / 리사이클러뷰 초기화
         mProgressBar = (ProgressBar) findViewById(R.id.progressBar);
         mMessageRecyclerView = (RecyclerView) findViewById(R.id.messageRecyclerView);
-        mLinearLayoutManager = new LinearLayoutManager(this);
-        mLinearLayoutManager.setStackFromEnd(true);
+        mMessageRecyclerView.setHasFixedSize(true);
+        final PreCachingLayoutManager preCachingLayoutManager = new PreCachingLayoutManager(this);
+        preCachingLayoutManager.setOrientation(LinearLayoutManager.VERTICAL);
+        preCachingLayoutManager.setExtraLayoutSpace(DeviceUtils.getScreenHeight(this));
+        preCachingLayoutManager.setStackFromEnd(true);
 
 
         mMessageEditText = (EditText) findViewById(R.id.messageEditText);
@@ -238,6 +251,7 @@ public class MainActivity extends AppCompatActivity
                                             String downloadUrl = task.getResult().toString();
                                             Glide.with(viewHolder.messageImageView.getContext())
                                                     .load(downloadUrl)
+                                                    .skipMemoryCache(true)
                                                     .into(viewHolder.messageImageView);
                                         } else {
                                             Log.w(TAG, "Getting download url was not successful.",
@@ -281,7 +295,7 @@ public class MainActivity extends AppCompatActivity
             public void onItemRangeInserted(int positionStart, int itemCount) {
                 super.onItemRangeInserted(positionStart, itemCount);
                 int friendlyMessageCount = mFirebaseAdapter.getItemCount();
-                int lastVisiblePosition = mLinearLayoutManager.findLastCompletelyVisibleItemPosition();
+                int lastVisiblePosition = preCachingLayoutManager.findLastCompletelyVisibleItemPosition();
                 if (lastVisiblePosition == -1 ||
                         (positionStart >= (friendlyMessageCount - 1) && lastVisiblePosition == (positionStart - 1))) {
                     mMessageRecyclerView.scrollToPosition(positionStart);
@@ -289,7 +303,7 @@ public class MainActivity extends AppCompatActivity
             }
         });
 
-        mMessageRecyclerView.setLayoutManager(mLinearLayoutManager);
+        mMessageRecyclerView.setLayoutManager(preCachingLayoutManager);
         mMessageRecyclerView.setAdapter(mFirebaseAdapter);
 
         mFirebaseRemoteConfig = FirebaseRemoteConfig.getInstance();
@@ -348,6 +362,7 @@ public class MainActivity extends AppCompatActivity
             if (resultCode == RESULT_OK) {
                 Bundle payload = new Bundle();
                 payload.putString(FirebaseAnalytics.Param.VALUE, "inv_sent");
+                mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SHARE, payload);
 
                 String[] ids = AppInviteInvitation.getInvitationIds(resultCode, data);
                 Log.d(TAG, "Invitations sent: " + ids.length);
@@ -416,16 +431,25 @@ public class MainActivity extends AppCompatActivity
 
     @Override
     public void onPause() {
+        if (mAdView != null) {
+            mAdView.pause();
+        }
         super.onPause();
     }
 
     @Override
     public void onResume() {
+        if (mAdView != null) {
+            mAdView.resume();
+        }
         super.onResume();
     }
 
     @Override
     public void onDestroy() {
+        if (mAdView != null) {
+            mAdView.destroy();
+        }
         super.onDestroy();
     }
 
@@ -445,9 +469,23 @@ public class MainActivity extends AppCompatActivity
                 mUsername = ANONYMOUS;
                 startActivity(new Intent(this, SignInActivity.class));
                 return true;
+            case R.id.fresh_config_menu :
+                fetchConfig();
+                return true;
+            case R.id.invite_menu :
+                sendInvitation();
+                return true;
+            case R.id.crash_menu :
+                FirebaseCrash.logcat(Log.ERROR, TAG, "Crash caused!");
+                //causeCrash();
+                return true;
             default:
                 return super.onOptionsItemSelected(item);
         }
+    }
+
+    private void causeCrash() {
+        throw new NullPointerException("Fake Exception!!");
     }
 
     public void fetchConfig() {
@@ -479,6 +517,14 @@ public class MainActivity extends AppCompatActivity
         Long friendly_msg_length = mFirebaseRemoteConfig.getLong("friendly_msg_length");
         mMessageEditText.setFilters(new InputFilter[]{new InputFilter.LengthFilter(friendly_msg_length.intValue())});
         Log.e(TAG, "FML is: " + friendly_msg_length);
+    }
+
+    private void sendInvitation() {
+        Intent intent = new AppInviteInvitation.IntentBuilder(getString(R.string.invitation_title))
+                .setMessage(getString(R.string.invitation_message))
+                .setCallToActionText(getString(R.string.invitation_cta))
+                .build();
+        startActivityForResult(intent, REQUEST_INVITE);
     }
 
 
